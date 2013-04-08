@@ -23,7 +23,7 @@ from cloud.storage import JsonVolumeManager
 from cloud.storage import JsonVolumeSpecManager
 from cloud.storage import MountableVolume
 from cloud.storage import Storage
-from cloud.exception import VolumesStillInUseException
+from cloud.exception import VolumesStillInUseException, InvalidSpotConfigurationException
 from cloud.util import xstr
 from cloud.util import get_ec2_connection
 from cloud.util import log_cluster_action
@@ -316,8 +316,9 @@ class Ec2Cluster(Cluster):
             kernel_id=kwargs.get('kernel_id', None),
             ramdisk_id=kwargs.get('ramdisk_i', None),
             monitoring_enabled=kwargs.get('monitoring_enabled', False),
-            subnet_id=kwargs.get('subnet_id', None))     
-        return [instance_request.id for instance_request in results]
+            subnet_id=kwargs.get('subnet_id', None))
+        #return [instance_request.id for instance_request in results]
+        return self.wait_for_spot_instances(results)
 
     else:
         reservation = self.ec2Connection.run_instances(image_id, min_count=number,
@@ -325,6 +326,23 @@ class Ec2Cluster(Cluster):
             security_groups=security_groups, user_data=user_data,
             instance_type=size_id, placement=kwargs.get('placement', None))
         return [instance.id for instance in reservation.instances]
+
+  @timeout(600)
+  def wait_for_spot_instances(self, spot_requests):
+    wait_time = 3
+    ids = [spot_request.id for spot_request in spot_requests]
+    while True:
+      try:
+        active_requests = self.ec2Connection.get_all_spot_instance_requests(ids)
+        if self._all_active(active_requests):
+          break
+      except EC2ResponseError, e:
+        pass
+      time.sleep(wait_time)
+    return [i.instance_id for i in active_requests]
+
+  def _all_active(self, requests):
+    return len(requests) == len([sir for sir in requests if sir.state == 'active'])
 
   @timeout(600)
   def wait_for_instances(self, instance_ids, fail_on_terminated=True):
